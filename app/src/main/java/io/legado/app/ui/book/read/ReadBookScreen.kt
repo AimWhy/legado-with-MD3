@@ -11,8 +11,10 @@ import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.ImageLoader
 import io.legado.app.R
 import io.legado.app.data.repository.ReadPreferences
+import io.legado.app.domain.gateway.CoverSettingsGateway
 import io.legado.app.ui.book.read.sheet.AiRewritePresetConfigSheet
 import io.legado.app.ui.book.read.sheet.AiTextCleanSheet
 import io.legado.app.ui.book.read.sheet.AiTextRewriteSheet
@@ -25,41 +27,37 @@ import io.legado.app.ui.book.read.sheet.ContentEditSheet
 import io.legado.app.ui.book.read.sheet.ContentProcessesSheet
 import io.legado.app.ui.book.read.sheet.DownloadSheet
 import io.legado.app.ui.book.read.sheet.EffectiveReplacesSheet
+import io.legado.app.ui.book.read.sheet.EyeProtectionConfigSheet
+import io.legado.app.ui.book.read.sheet.FloatingBarIconConfigSheet
 import io.legado.app.ui.book.read.sheet.HighlightRuleConfigSheet
-import io.legado.app.ui.book.read.sheet.HttpTtsEditSheet
 import io.legado.app.ui.book.read.sheet.MoreConfigSheet
 import io.legado.app.ui.book.read.sheet.PageAnimConfigSheet
 import io.legado.app.ui.book.read.sheet.PageKeyConfigSheet
 import io.legado.app.ui.book.read.sheet.PhotoSheet
-import io.legado.app.ui.book.read.sheet.ReadAloudConfigSheet
 import io.legado.app.ui.book.read.sheet.ReadAloudNumberConfigSheet
+import io.legado.app.ui.book.read.sheet.ReadAloudPage
+import io.legado.app.ui.book.read.sheet.ReadAloudScreen
 import io.legado.app.ui.book.read.sheet.ShadowSetSheet
 import io.legado.app.ui.book.read.sheet.SimulatedReadingSheet
-import io.legado.app.ui.book.read.sheet.SpeakEngineConfigSheet
-import io.legado.app.ui.book.read.sheet.TitleBarIconSheet
 import io.legado.app.ui.book.read.sheet.ToolButtonConfigSheet
 import io.legado.app.ui.book.read.sheet.UnderlineConfigSheet
 import io.legado.app.ui.book.readaloud.player.ReadAloudPlayerEffect
-import io.legado.app.ui.book.readaloud.player.ReadAloudPlayerSheet
 import io.legado.app.ui.book.readaloud.player.ReadAloudPlayerViewModel
 import io.legado.app.ui.dict.DictSheet
+import io.legado.app.ui.theme.LegadoTheme
+import io.legado.app.ui.theme.rememberImageSeedColor
+import io.legado.app.ui.theme.rememberThemeOverride
 import io.legado.app.ui.widget.components.FontFolderState
 import io.legado.app.ui.widget.components.FontSelectSheet
 import io.legado.app.ui.widget.components.alert.AppAlertDialog
 import io.legado.app.ui.widget.components.bookmark.BookmarkEditSheet
 import io.legado.app.ui.widget.components.changeSource.ChangeSourceSheet
+import io.legado.app.ui.widget.components.image.cover.usesDefaultBookCover
 import io.legado.app.ui.widget.components.log.AppLogSheet
 import io.legado.app.utils.toastOnUi
-import coil.ImageLoader
-import io.legado.app.ui.config.coverConfig.CoverConfig
-import io.legado.app.ui.theme.LegadoTheme
-import io.legado.app.ui.theme.ProvideThemeOverride
-import io.legado.app.ui.theme.rememberImageSeedColor
-import io.legado.app.ui.theme.rememberThemeOverride
-import io.legado.app.ui.widget.components.image.cover.usesDefaultBookCover
-import io.legado.app.model.BookCover as BookCoverModel
 import kotlinx.coroutines.flow.collectLatest
 import org.koin.compose.koinInject
+import io.legado.app.model.BookCover as BookCoverModel
 
 /**
  * Stateless ReadBook screen — renders BackHandler + dialogs + sheets.
@@ -77,8 +75,8 @@ fun ReadBookScreen(
         when {
             state.activeSheet != null -> onIntent(ReadBookIntent.DismissSheet)
             state.isShowingSearchResult -> onIntent(ReadBookIntent.ExitSearch)
-            state.menuVisible -> onIntent(ReadBookIntent.ReadMenuBack)
             state.isAutoPage -> onIntent(ReadBookIntent.StopAutoPage)
+            state.menuState.canNavigateBack -> onIntent(ReadBookIntent.ReadMenuBack)
             else -> onIntent(ReadBookIntent.CloseReadBook())
         }
     }
@@ -240,8 +238,18 @@ fun ReadBookScreen(
         onDismissRequest = dismissSheet,
         onIntent = onIntent,
     )
-    TitleBarIconSheet(
-        show = state.activeSheet is ReadBookSheet.TitleBarIconConfig,
+    EyeProtectionConfigSheet(
+        show = state.activeSheet is ReadBookSheet.EyeProtection,
+        enabled = preferences.eyeProtectionEnabled,
+        intensity = preferences.eyeProtectionIntensity,
+        autoNight = preferences.eyeProtectionAutoNight,
+        onDismissRequest = dismissSheet,
+        onEnabledChange = { onIntent(ReadBookIntent.EyeProtectionEnabledChanged(it)) },
+        onIntensityChange = { onIntent(ReadBookIntent.EyeProtectionIntensityChanged(it)) },
+        onAutoNightChange = { onIntent(ReadBookIntent.EyeProtectionAutoNightChanged(it)) },
+    )
+    FloatingBarIconConfigSheet(
+        show = state.activeSheet is ReadBookSheet.FloatingBarIconConfig,
         items = state.menuConfig.titleBarButtons,
         customIcons = state.menuConfig.titleBarCustomIcons,
         onDismissRequest = dismissSheet,
@@ -298,28 +306,6 @@ fun ReadBookScreen(
         },
         onOpenTextSelectMenuConfig = onOpenTextSelectMenuConfig,
     )
-    ReadAloudConfigSheet(
-        show = state.activeSheet is ReadBookSheet.ReadAloudConfig,
-        state = state,
-        onIntent = onIntent,
-        onDismissRequest = dismissSheet,
-    )
-    SpeakEngineConfigSheet(
-        show = state.activeSheet is ReadBookSheet.SpeakEngineConfig,
-        state = state,
-        onIntent = onIntent,
-        onDismissRequest = {
-            onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.ReadAloudConfig))
-        },
-    )
-    HttpTtsEditSheet(
-        show = state.activeSheet is ReadBookSheet.HttpTtsEdit,
-        httpTTS = state.editingHttpTts,
-        onIntent = onIntent,
-        onDismissRequest = {
-            onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.SpeakEngineConfig))
-        },
-    )
     ReadAloudNumberConfigSheet(
         show = state.activeSheet is ReadBookSheet.PreDownloadConfig,
         title = stringResource(R.string.read_aloud_preload),
@@ -328,6 +314,20 @@ fun ReadBookScreen(
         defaultValue = 10,
         valueRange = 0f..100f,
         onValueChange = { onIntent(ReadBookIntent.ApplyPreDownloadNum(it)) },
+        onDismissRequest = {
+            onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.ReadAloudConfig))
+        },
+    )
+    ReadAloudNumberConfigSheet(
+        show = state.activeSheet is ReadBookSheet.PreSynthesisConcurrencyConfig,
+        title = stringResource(R.string.tts_pre_synthesis_concurrency),
+        description = stringResource(
+            R.string.tts_pre_synthesis_concurrency_summary, state.preSynthesisConcurrency,
+        ),
+        value = state.preSynthesisConcurrency,
+        defaultValue = 3,
+        valueRange = 1f..8f,
+        onValueChange = { onIntent(ReadBookIntent.ApplyPreSynthesisConcurrency(it)) },
         onDismissRequest = {
             onIntent(ReadBookIntent.ShowSheet(ReadBookSheet.ReadAloudConfig))
         },
@@ -384,9 +384,10 @@ fun ReadBookScreen(
     val aloudPlayerState by aloudPlayerViewModel.uiState.collectAsStateWithLifecycle()
     val playerTheme = run {
         val imageLoader: ImageLoader = koinInject()
+        val coverSettings = koinInject<CoverSettingsGateway>().currentSettings
         val isNight = LegadoTheme.isDark
         val useDefaultCover = usesDefaultBookCover(aloudPlayerState.coverPath)
-        val defaultCoverPaths = if (isNight) CoverConfig.defaultCoverDark else CoverConfig.defaultCover
+        val defaultCoverPaths = if (isNight) coverSettings.defaultCoverDark else coverSettings.defaultCover
         val coverPath = remember(
             aloudPlayerState.bookName,
             aloudPlayerState.author,
@@ -405,7 +406,7 @@ fun ReadBookScreen(
             }
         }
         val sourceOrigin = if (useDefaultCover) null else aloudPlayerState.sourceOrigin
-        val loadOnlyWifi = !useDefaultCover && CoverConfig.loadCoverOnlyWifi
+        val loadOnlyWifi = !useDefaultCover && coverSettings.loadOnlyOnWifi
         val requestKey = remember(coverPath, sourceOrigin, loadOnlyWifi) {
             listOf(coverPath, sourceOrigin, loadOnlyWifi)
         }
@@ -419,16 +420,25 @@ fun ReadBookScreen(
         }
         rememberThemeOverride(seedColor)
     }
-    ProvideThemeOverride(playerTheme.takeIf { state.activeSheet is ReadBookSheet.ReadAloudPlayer }) {
-        ReadAloudPlayerSheet(
-            show = state.activeSheet is ReadBookSheet.ReadAloudPlayer,
-            onDismissRequest = dismissSheet,
-            state = aloudPlayerState,
-            onIntent = aloudPlayerViewModel::onIntent,
-        )
+    val readAloudPage = when (state.activeSheet) {
+        ReadBookSheet.ReadAloudConfig -> ReadAloudPage.Config
+        ReadBookSheet.ReadAloudPlayer -> ReadAloudPage.Player
+        else -> null
     }
+    ReadAloudScreen(
+        page = readAloudPage,
+        state = state,
+        playerState = aloudPlayerState,
+        playerTheme = playerTheme,
+        onIntent = onIntent,
+        onPlayerIntent = aloudPlayerViewModel::onIntent,
+        onDismissRequest = dismissSheet,
+    )
     LaunchedEffect(state.activeSheet) {
         if (state.activeSheet is ReadBookSheet.ReadAloudPlayer) {
+            aloudPlayerViewModel.onIntent(
+                io.legado.app.ui.book.readaloud.player.ReadAloudPlayerIntent.Refresh
+            )
             aloudPlayerViewModel.effects.collectLatest { effect ->
                 when (effect) {
                     ReadAloudPlayerEffect.OpenToc -> onIntent(ReadBookIntent.OpenChapterList)

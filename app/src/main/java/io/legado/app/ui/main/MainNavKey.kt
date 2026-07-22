@@ -132,7 +132,10 @@ data class MainRouteBookVoiceCasting(
 ) : MainRoute
 
 @Serializable
-data object MainRouteCloudTtsEngines : MainRoute
+data class MainRouteCloudTtsEngines(val bookUrl: String? = null) : MainRoute
+
+@Serializable
+data object MainRouteTtsCache : MainRoute
 
 @Serializable
 data class MainRouteBookKnowledgeList(
@@ -222,4 +225,5 @@ object MainRouteConst {
     const val ROUTE_READ_RECORD = "read_record"
     const val ROUTE_READ_RECORD_OVERVIEW = "read_record_overview"
     const val ROUTE_ABOUT = "about"
+    const val ROUTE_TTS_CACHE = "tts_cache"
 }

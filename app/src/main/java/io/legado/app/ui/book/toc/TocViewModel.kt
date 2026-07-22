@@ -4,7 +4,6 @@ import android.app.Application
 import android.net.Uri
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
-
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import io.legado.app.R
@@ -15,12 +14,12 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.Bookmark
 import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.data.repository.ReadSettingsRepository
+import io.legado.app.domain.gateway.OtherSettingsGateway
 import io.legado.app.domain.usecase.CacheBookChaptersUseCase
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.bookmark.BookmarkExporter
-import io.legado.app.help.config.AppConfig
 import io.legado.app.model.CacheBook
 import io.legado.app.model.ReadBook
 import io.legado.app.model.cache.CacheBookDownloadState
@@ -38,13 +37,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -66,6 +65,7 @@ data class TocItemUi(
     val title: String,
     val tag: String?,
     val isVolume: Boolean,
+    val tocLevel: Int,
     val isVip: Boolean,
     val isPay: Boolean,
     val isDur: Boolean,
@@ -151,7 +151,9 @@ private data class TocUiConfig(
     val collapsedVolumes: Set<Int>,
     val useReplace: Boolean,
     val showWordCount: Boolean,
-    val isReverse: Boolean
+    val isReverse: Boolean,
+    val defaultReplaceEnabled: Boolean,
+    val chineseConverterType: Int,
 )
 
 private data class TocPreferences(
@@ -205,7 +207,8 @@ class TocViewModel(
     application: Application,
     savedStateHandle: SavedStateHandle,
     private val cacheBookChaptersUseCase: CacheBookChaptersUseCase,
-    private val readSettingsRepository: ReadSettingsRepository
+    private val readSettingsRepository: ReadSettingsRepository,
+    private val otherSettingsGateway: OtherSettingsGateway,
 ) : BaseRuleViewModel<TocItemUi, TocDomainItem, Int, TocActionState>(
     application,
     initialState = TocActionState()
@@ -342,9 +345,18 @@ class TocViewModel(
     private val uiConfigFlow = combine(
         _collapsedVolumes,
         tocPreferences,
-        reverseFlow
-    ) { collapsed, tocPreferences, isReverse ->
-        TocUiConfig(collapsed, tocPreferences.useReplace, tocPreferences.showWordCount, isReverse)
+        reverseFlow,
+        otherSettingsGateway.settings,
+        readSettingsRepository.settings,
+    ) { collapsed, tocPreferences, isReverse, otherSettings, readSettings ->
+        TocUiConfig(
+            collapsedVolumes = collapsed,
+            useReplace = tocPreferences.useReplace,
+            showWordCount = tocPreferences.showWordCount,
+            isReverse = isReverse,
+            defaultReplaceEnabled = otherSettings.replaceEnableDefault,
+            chineseConverterType = readSettings.chineseConverterType,
+        )
     }
 
     private val titleReplaceState = MutableStateFlow(TitleReplaceState())
@@ -361,12 +373,14 @@ class TocViewModel(
         val book = bookState.value ?: return@combine emptyList()
 
         val processedChapters = if (config.isReverse) {
-            originalChapters.groupAndReverseVolumes()
+            originalChapters.reverseTocHierarchy()
         } else {
             originalChapters
         }
 
-        val replaceRules = if (config.useReplace && book.getUseReplaceRule()) {
+        val replaceRules = if (
+            config.useReplace && book.getUseReplaceRule(config.defaultReplaceEnabled)
+        ) {
             ContentProcessor.get(book.name, book.origin).getTitleReplaceRules()
         } else emptyList()
 
@@ -374,12 +388,17 @@ class TocViewModel(
             book = book,
             chapters = processedChapters,
             replaceRules = replaceRules,
-            useReplace = config.useReplace
+            useReplace = config.useReplace,
+            defaultReplaceEnabled = config.defaultReplaceEnabled,
+            chineseConverterType = config.chineseConverterType,
         )
 
         if (book.isLocal) {
             return@combine processedChapters.map { chapter ->
-                val baseTitle = chapter.getDisplayTitle(useReplace = false)
+                val baseTitle = chapter.getDisplayTitle(
+                    useReplace = false,
+                    chineseConverterType = config.chineseConverterType,
+                )
                 TocDomainItem(
                     chapter = chapter,
                     displayTitle = titleState.titles[chapter.index] ?: baseTitle,
@@ -400,7 +419,10 @@ class TocViewModel(
                 else -> DownloadState.NONE
             }
 
-            val baseTitle = chapter.getDisplayTitle(useReplace = false)
+            val baseTitle = chapter.getDisplayTitle(
+                useReplace = false,
+                chineseConverterType = config.chineseConverterType,
+            )
             TocDomainItem(
                 chapter,
                 titleState.titles[chapter.index] ?: baseTitle,
@@ -417,19 +439,9 @@ class TocViewModel(
         val collapsed = _collapsedVolumes.value
         val isSearch = key.isNotBlank()
 
-        return buildList {
-            var isCurrentVolumeCollapsed = false
-            for (item in data) {
-                if (item.chapter.isVolume) {
-                    isCurrentVolumeCollapsed = collapsed.contains(item.chapter.index)
-                } else if (isCurrentVolumeCollapsed && !isSearch) {
-                    continue
-                }
-
-                if (!isSearch || item.displayTitle.contains(key, true) || item.chapter.isVolume) {
-                    add(item)
-                }
-            }
+        val visibleItems = if (isSearch) data else filterCollapsedToc(data, collapsed)
+        return visibleItems.filter {
+            !isSearch || it.displayTitle.contains(key, true) || it.chapter.isVolume
         }
     }
 
@@ -477,6 +489,7 @@ class TocViewModel(
             title = displayTitle,
             tag = chapter.tag,
             isVolume = chapter.isVolume,
+            tocLevel = chapter.tocLevel,
             isVip = chapter.isVip,
             isPay = chapter.isPay,
             isDur = false,
@@ -734,27 +747,17 @@ class TocViewModel(
         _effects.tryEmit(TocEffect.ShowMessage(message))
     }
 
-    private fun List<BookChapter>.groupAndReverseVolumes(): List<BookChapter> {
-        return this.fold(mutableListOf<MutableList<BookChapter>>()) { acc, chapter ->
-            if (chapter.isVolume || acc.isEmpty()) acc.add(mutableListOf(chapter))
-            else acc.last().add(chapter)
-            acc
-        }.asReversed().flatMap { group ->
-            if (group.firstOrNull()?.isVolume == true) {
-                listOf(group.first()) + group.drop(1).asReversed()
-            } else {
-                group.asReversed()
-            }
-        }
-    }
-
     private fun updateTitleReplaceCacheIfNeeded(
         book: Book,
         chapters: List<BookChapter>,
         replaceRules: List<ReplaceRule>,
-        useReplace: Boolean
+        useReplace: Boolean,
+        defaultReplaceEnabled: Boolean,
+        chineseConverterType: Int,
     ) {
-        val shouldUseReplace = useReplace && book.getUseReplaceRule() && replaceRules.isNotEmpty()
+        val shouldUseReplace = useReplace &&
+                book.getUseReplaceRule(defaultReplaceEnabled) &&
+                replaceRules.isNotEmpty()
         if (!shouldUseReplace) {
             titleCacheJob?.cancel()
             titleCacheJob = null
@@ -779,7 +782,7 @@ class TocViewModel(
             bookUrl = book.bookUrl,
             useReplace = true,
             rulesFingerprint = rulesFingerprint,
-            chineseConverterType = AppConfig.chineseConverterType,
+            chineseConverterType = chineseConverterType,
             chapterCount = chapters.size,
             chaptersFingerprint = chapters.fold(0L) { fingerprint, chapter ->
                 fingerprint + 31L * chapter.index + chapter.title.hashCode()
@@ -835,7 +838,13 @@ class TocViewModel(
             chapters.asFlow()
                 .flatMapMerge(concurrency = workerCount) { chapter ->
                     flow {
-                        emit(chapter.index to chapter.getDisplayTitle(replaceRules, true))
+                        emit(
+                            chapter.index to chapter.getDisplayTitle(
+                                replaceRules,
+                                true,
+                                chineseConverterType = chineseConverterType,
+                            )
+                        )
                     }
                 }
                 .collect { (chapterIndex, displayTitle) ->

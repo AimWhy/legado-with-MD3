@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.Observer
 import com.jeremyliao.liveeventbus.LiveEventBus
 import io.legado.app.constant.EventBus
+import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.model.readaloud.ReadAloudSessionStatus
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadAloudSessionStore
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.merge
 class ReadAloudPlayerCoordinator(
     private val application: Application,
     private val sessionStore: ReadAloudSessionStore,
+    private val readAloudSettingsGateway: ReadAloudSettingsGateway,
 ) {
     private val refreshRequests = MutableSharedFlow<Unit>(replay = 1)
     private val bookChanges = callbackFlow {
@@ -104,7 +106,8 @@ class ReadAloudPlayerCoordinator(
             chapterTitle = chapter?.title.orEmpty(),
             chapterText = chapter?.getContent().orEmpty(),
             textLines = chapter?.paragraphs.orEmpty().mapNotNull { paragraph ->
-                paragraph.text.trim().takeIf(String::isNotEmpty)?.let {
+                paragraph.text.replace(Regex("[袮꧁]"), " ").trim()
+                    .takeIf(String::isNotEmpty)?.let {
                     ReadAloudTextLineUi(it, paragraph.chapterPosition)
                 }
             }.toImmutableList(),
@@ -124,8 +127,8 @@ class ReadAloudPlayerCoordinator(
     fun previousChapter() = ReadBook.moveToPrevChapter(true, false)
     fun nextChapter() = ReadBook.moveToNextChapter(true)
 
-    fun setSpeed(value: Int) {
-        ReadConfig.ttsSpeechRate = value
+    suspend fun setSpeed(value: Int) {
+        readAloudSettingsGateway.update { it.copy(ttsSpeechRate = value.coerceIn(0, 80)) }
         ReadAloud.upTtsSpeechRate(application)
     }
 
@@ -144,6 +147,8 @@ class ReadAloudPlayerCoordinator(
             EventBus.UP_CONFIG,
             EventBus.UPDATE_READ_ACTION_BAR,
             EventBus.SOURCE_CHANGED,
+            EventBus.ALOUD_STATE,
+            EventBus.TTS_PROGRESS,
         )
     }
 
